@@ -28,10 +28,14 @@ def planner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     print(f"  Planner → {next_step} | {reasoning}")
 
-    return {
+    update: Dict[str, Any] = {
         "next_step":  next_step,
         "plan_logs":  [reasoning],
     }
+    # Registrar error cuando el anti-loop termina el pipeline sin resultados
+    if next_step == "END" and attempts >= MAX_SEARCH_ATTEMPTS and not leads:
+        update["error_message"] = reasoning
+    return update
 
 
 def _decide(
