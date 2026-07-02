@@ -8,13 +8,14 @@ Devuelve un dict {company_name: hubspot_contact_id} para trazabilidad.
 
 Cuándo se llama:
     Al finalizar el pipeline (cuando Planner decide END con output_type="both"),
-    main.py puede invocar esta función opcionalmente para registrar los leads
-    en HubSpot y asociar el outreach_draft como nota del contacto.
+    app.py invoca esta función para registrar los leads en HubSpot y asociar
+    el outreach_draft como nota del contacto.
 
-Flujo de llamadas a HubSpot:
-    1. POST /crm/v3/objects/contacts    → crear o actualizar contacto (email como key)
-    2. POST /crm/v3/objects/notes       → crear nota con el outreach_draft
-    3. POST /crm/v3/associations/...    → asociar nota al contacto
+Flujo de llamadas a HubSpot por cada lead:
+    1. POST /crm/v3/objects/contacts    → crea el contacto (email como key)
+       Si 409 (ya existe) → POST /crm/v3/objects/contacts/search para obtener el ID
+    2. POST /crm/v3/objects/notes       → crea nota con el outreach_draft
+       (la asociación al contacto se incluye inline en el body de creación)
 
 Documentación:
     https://developers.hubspot.com/docs/api/crm/contacts
@@ -22,64 +23,108 @@ Documentación:
 
 Autenticación:
     Bearer token: HUBSPOT_ACCESS_TOKEN (Private App token, no OAuth)
-    Header: { "Authorization": f"Bearer {HUBSPOT_ACCESS_TOKEN}" }
-
-TODO para Claude Code:
-    [ ] Implementar _upsert_contact(lead) -> str  (devuelve contact_id)
-    [ ] Implementar _create_note(contact_id, message) -> str  (devuelve note_id)
-    [ ] Implementar push_leads_to_hubspot() orquestando ambas llamadas por lead
-    [ ] Manejar el caso de contacto duplicado (buscar por email antes de crear)
-    [ ] Logging de errores por lead individual sin abortar el resto del batch
 """
 import os
+import datetime
 import requests
 from typing import Dict, List, Any
 
-HUBSPOT_TOKEN = os.getenv("HUBSPOT_ACCESS_TOKEN")
-_BASE_URL     = "https://api.hubapi.com"
-_HEADERS      = lambda: {
-    "Authorization": f"Bearer {HUBSPOT_TOKEN}",
-    "Content-Type":  "application/json",
-}
+_BASE_URL = "https://api.hubapi.com"
+
+# associationTypeId 202 = note → contact (HUBSPOT_DEFINED)
+_NOTE_TO_CONTACT_TYPE = {"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 202}
+
+
+def _headers() -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {os.getenv('HUBSPOT_ACCESS_TOKEN', '')}",
+        "Content-Type": "application/json",
+    }
 
 
 def _upsert_contact(lead: Dict[str, Any]) -> str:
     """
     Crea o actualiza un contacto en HubSpot usando email como identificador único.
 
-    Args:
-        lead: LeadInfo dict con contact_email, contact_name, contact_role, company_name
-
     Returns:
         HubSpot contact_id (string)
 
-    TODO: implementar con POST /crm/v3/objects/contacts
+    Raises:
+        requests.HTTPError: En errores de API distintos de 409.
     """
-    raise NotImplementedError(
-        "Implementar _upsert_contact() con HubSpot Contacts API. "
-        "Ver: https://developers.hubspot.com/docs/api/crm/contacts"
+    name_parts = (lead.get("contact_name") or "").split(" ", 1)
+    properties = {
+        "email":         lead.get("contact_email", ""),
+        "firstname":     name_parts[0] if name_parts else "",
+        "lastname":      name_parts[1] if len(name_parts) > 1 else "",
+        "jobtitle":      lead.get("contact_role") or "",
+        "company":       lead.get("company_name") or "",
+        "website":       lead.get("website") or "",
+        "hs_lead_status": "NEW",
+    }
+
+    resp = requests.post(
+        f"{_BASE_URL}/crm/v3/objects/contacts",
+        json={"properties": properties},
+        headers=_headers(),
+        timeout=10,
     )
+
+    if resp.status_code == 201:
+        return resp.json()["id"]
+
+    # 409 = contacto ya existe — buscar por email y devolver el ID
+    if resp.status_code == 409:
+        search = requests.post(
+            f"{_BASE_URL}/crm/v3/objects/contacts/search",
+            json={
+                "filterGroups": [{
+                    "filters": [{
+                        "propertyName": "email",
+                        "operator":     "EQ",
+                        "value":        lead.get("contact_email", ""),
+                    }]
+                }],
+                "limit": 1,
+            },
+            headers=_headers(),
+            timeout=10,
+        )
+        search.raise_for_status()
+        results = search.json().get("results", [])
+        if results:
+            return results[0]["id"]
+
+    resp.raise_for_status()
+    return resp.json()["id"]  # unreachable, satisface type checker
 
 
 def _create_note(contact_id: str, message: str, company_name: str) -> str:
     """
-    Crea una nota en HubSpot con el outreach draft y la asocia al contacto.
-
-    Args:
-        contact_id:   ID del contacto HubSpot
-        message:      Outreach draft generado por el Copywriter
-        company_name: Para el título de la nota
+    Crea una nota con el outreach draft y la asocia inline al contacto.
 
     Returns:
         HubSpot note_id (string)
-
-    TODO: implementar con POST /crm/v3/objects/notes +
-          POST /crm/v3/associations/notes/contacts/batch/create
     """
-    raise NotImplementedError(
-        "Implementar _create_note() con HubSpot Notes API. "
-        "Ver: https://developers.hubspot.com/docs/api/crm/notes"
+    timestamp_ms = str(int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000))
+
+    resp = requests.post(
+        f"{_BASE_URL}/crm/v3/objects/notes",
+        json={
+            "properties": {
+                "hs_note_body": f"[{company_name}] Outreach draft:\n\n{message}",
+                "hs_timestamp": timestamp_ms,
+            },
+            "associations": [{
+                "to":    {"id": contact_id},
+                "types": [_NOTE_TO_CONTACT_TYPE],
+            }],
+        },
+        headers=_headers(),
+        timeout=10,
     )
+    resp.raise_for_status()
+    return resp.json()["id"]
 
 
 def push_leads_to_hubspot(
@@ -94,13 +139,36 @@ def push_leads_to_hubspot(
         outreach_drafts: Dict company_name → mensaje (del AgentState)
 
     Returns:
-        Dict {company_name: hubspot_contact_id} para trazabilidad
+        Dict {company_name: hubspot_contact_id} para trazabilidad.
+        Los leads que fallan se omiten del resultado pero no abortan el batch.
 
-    Solo procesa leads que tienen contact_email (requerido por HubSpot como
-    identificador único de contacto).
-
-    TODO: implementar llamando a _upsert_contact() y _create_note() por cada lead
+    Raises:
+        EnvironmentError: Si HUBSPOT_ACCESS_TOKEN no está definida.
     """
-    raise NotImplementedError(
-        "Implementar push_leads_to_hubspot() orquestando upsert + note por lead."
-    )
+    if not os.getenv("HUBSPOT_ACCESS_TOKEN"):
+        raise EnvironmentError("HUBSPOT_ACCESS_TOKEN no está definida en el entorno.")
+
+    pushed: Dict[str, str] = {}
+
+    for lead in leads:
+        company = lead.get("company_name", "")
+
+        if not lead.get("contact_email"):
+            print(f"  ⚠ HubSpot: {company} — sin email, omitido.")
+            continue
+
+        try:
+            contact_id = _upsert_contact(lead)
+            print(f"  ✓ HubSpot contacto: {company} → ID {contact_id}")
+
+            draft = outreach_drafts.get(company)
+            if draft:
+                _create_note(contact_id, draft, company)
+                print(f"  ✓ HubSpot nota asociada a {company}")
+
+            pushed[company] = contact_id
+
+        except Exception as exc:
+            print(f"  ✗ HubSpot error en {company}: {exc}")
+
+    return pushed

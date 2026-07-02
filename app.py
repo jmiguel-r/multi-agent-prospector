@@ -20,6 +20,7 @@ import streamlit as st
 
 from main import build_graph
 from state import LeadGenerationTarget, AgentState
+from integrations.hubspot import push_leads_to_hubspot
 
 # ---------------------------------------------------------------------------
 # Configuración de página
@@ -204,8 +205,15 @@ if "result" in st.session_state:
                 if not os.getenv("HUBSPOT_ACCESS_TOKEN"):
                     st.warning("HUBSPOT_ACCESS_TOKEN no configurado. Agrega la clave en Secrets.")
                 else:
-                    # TODO: llamar a integrations/hubspot.push_leads_to_hubspot()
-                    st.info("🚧 Integración HubSpot en construcción (integrations/hubspot.py).")
+                    with st.spinner("Exportando a HubSpot..."):
+                        edited = st.session_state.get("edited_drafts", drafts)
+                        pushed = push_leads_to_hubspot(result["leads"], edited)
+                    if pushed:
+                        st.success(f"✅ {len(pushed)} contacto(s) exportados a HubSpot.")
+                        for company, cid in pushed.items():
+                            st.caption(f"• {company} → ID `{cid}`")
+                    else:
+                        st.warning("Ningún lead fue exportado. Revisa los logs en la consola.")
 
     # TAB 3 — AUDIT LOG
     with tab_audit:
