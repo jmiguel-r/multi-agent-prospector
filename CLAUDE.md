@@ -21,14 +21,15 @@ El Planner es el ÚNICO punto de decisión. Ningún agente enruta directamente a
 |---------|--------|-------|
 | `state.py` | ✅ Completo | No modificar — es el contrato de datos de todo el sistema |
 | `main.py` | ✅ Completo | Grafo ensamblado y probado end-to-end |
-| `agents/planner.py` | ✅ Completo | Routing determinista, no requiere LLM |
-| `agents/lead_finder.py` | ✅ Funcional con mocks | Los mocks están claramente marcados — reemplazar con `integrations/` |
-| `agents/copywriter.py` | ✅ Completo | Async, usa Gemini 2.5 Pro, fallback sin API key |
-| `integrations/google_maps.py` | ⬜ Stub | Implementar llamadas reales a Places API |
+| `planner.py` | ✅ Completo | Routing determinista, no requiere LLM |
+| `lead_finder.py` | ✅ Completo | Usa `search_companies()` real; mock de nombre/rol de contacto pendiente |
+| `copywriter.py` | ✅ Completo | Async, usa Gemini 2.5 Pro, fallback sin API key |
+| `app.py` | ✅ Completo | Streamlit UI: tabla de leads, drafts editables, export a HubSpot |
+| `integrations/google_maps.py` | ✅ Completo | Places API (New) — single POST, descarta resultados sin website |
 | `integrations/hunter.py` | ✅ Completo | `find_public_contact()` (scraping, 0 créditos) + `enrich_with_hunter()` (API real) |
+| `integrations/hubspot.py` | ✅ Completo | `push_leads_to_hubspot()`: upsert contacto + nota con draft; tolerante a fallos por lead |
 | `integrations/apollo.py` | 🗄 Deprecado | Reemplazado por Hunter.io — conservado como referencia histórica |
-| `integrations/hubspot.py` | ⬜ Stub | Push de leads calificados al CRM |
-| `tests/test_pipeline.py` | ⬜ Stub | Tests unitarios por nodo + test end-to-end |
+| `tests/test_pipeline.py` | ✅ Completo | 17 tests verdes: validación, routing, filtro de calidad, e2e |
 
 ## Reglas de arquitectura — NO cambiar sin revisar el diseño
 
@@ -68,32 +69,19 @@ endpoint más simple (domain + first_name + last_name → email),
 y estrategia "Zero Cost" que protege créditos con scraping previo.
 
 Sin estas claves el sistema corre en modo mock (ver `copywriter.py` línea ~60
-y los mocks en `agents/lead_finder.py`).
+y el mock `_enrich_mock()` en `lead_finder.py`).
 
-## Cómo conectar las integraciones reales
+## Mocks pendientes en lead_finder.py
 
-En `agents/lead_finder.py`, reemplazar las dos funciones mock:
+Google Maps y Hunter están conectados a sus APIs reales. Quedan dos mocks internos:
 
-```python
-# Antes (mock en agents/lead_finder.py):
-raw_results = _search_google_maps(criteria.industry, criteria.region)
-hunter_result = _enrich_mock(domain)
-
-# Después (real):
-from integrations.google_maps import search_companies
-# Hunter ya está importado directamente en lead_finder.py:
-# from integrations.hunter import find_public_contact, enrich_with_hunter, split_name
-# No se requiere cambio de import — basta con definir HUNTER_API_KEY en .env
-
-raw_results = search_companies(criteria.industry, criteria.region)
-```
-
-Los contratos de entrada/salida están definidos en `integrations/hunter.py` y
-`integrations/google_maps.py` — respetarlos garantiza zero cambios en la lógica
-de `lead_finder.py`.
+| Mock | Función | Reemplazar con |
+|------|---------|----------------|
+| `_find_contact_name(domain)` | Devuelve nombre/rol del tomador de decisión | Google Custom Search API o Tavily: `f"Gerente Planta OR Director Operaciones site:{domain}"` |
+| `_enrich_mock(domain)` | Fallback Hunter sin API key | Se activa automáticamente cuando `HUNTER_API_KEY` no está definida — no requiere cambio |
 
 ## Siguiente tarea prioritaria
-Implementar `integrations/google_maps.py`:
-- Función `search_companies(industry, region) -> List[Dict]`
-- 2 llamadas a Places API: `textsearch` → `place_details` (para obtener `website`)
-- Documentación de referencia: https://developers.google.com/maps/documentation/places/web-service/text-search
+Implementar búsqueda real del nombre del contacto en `lead_finder.py`:
+- Reemplazar `_find_contact_name(domain)` con llamada a Tavily o Google Custom Search
+- Query sugerida: `f"Gerente de Planta OR Director de Operaciones site:{domain}"`
+- Extraer nombre y rol del primer resultado con un LLM (Gemini Flash para bajo costo)
