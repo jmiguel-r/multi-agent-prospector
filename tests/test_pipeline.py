@@ -16,6 +16,16 @@ from planner import planner_node, MAX_SEARCH_ATTEMPTS
 from lead_finder import lead_finder_node
 from main import build_graph
 
+_MOCK_CSE_DB = {
+    "metalurgicamarques.mx": ("Carlos Mendoza",      "Gerente de Planta e Ingeniería", None),
+    "maquinadosbajio.com":   ("Alejandro Ruiz Torres", "Director de Operaciones",      None),
+    "aceroscen.mx":          (None, None, None),
+}
+
+def _mock_find_contact_name(domain):
+    return _MOCK_CSE_DB.get(domain, (None, None, None))
+
+
 _MOCK_MAPS_RESULTS = [
     {
         "title":   "Metalúrgica El Marqués S.A.",
@@ -174,8 +184,9 @@ class TestPlannerRouting:
 class TestLeadFinderQualityFilter:
 
     @pytest.fixture(autouse=True)
-    def patch_maps(self, monkeypatch):
+    def patch_external(self, monkeypatch):
         monkeypatch.setattr("lead_finder.search_companies", lambda *a, **kw: _MOCK_MAPS_RESULTS)
+        monkeypatch.setattr("lead_finder._find_contact_name", _mock_find_contact_name)
 
     def _make_state(self):
         return _base_initial_state("both")
@@ -204,8 +215,9 @@ class TestLeadFinderQualityFilter:
 class TestPipelineEndToEnd:
 
     @pytest.fixture(autouse=True)
-    def patch_maps(self, monkeypatch):
+    def patch_external(self, monkeypatch):
         monkeypatch.setattr("lead_finder.search_companies", lambda *a, **kw: _MOCK_MAPS_RESULTS)
+        monkeypatch.setattr("lead_finder._find_contact_name", _mock_find_contact_name)
 
     @pytest.mark.asyncio
     async def test_full_pipeline_both_output_type(self):

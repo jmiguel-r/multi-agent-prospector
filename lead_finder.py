@@ -17,6 +17,8 @@ Pipeline de enriquecimiento en cascada con estrategia "Zero Cost":
 Los mocks están claramente marcados para reemplazar con integrations/
 cuando se activen las API keys reales.
 """
+import os
+import requests
 from typing import Dict, Any, List, Optional
 from state import AgentState, LeadInfo
 from integrations.google_maps import search_companies
@@ -26,34 +28,65 @@ from integrations.hunter import (
     split_name,
 )
 
+_CSE_URL = "https://www.googleapis.com/customsearch/v1"
+
 
 
 # ---------------------------------------------------------------------------
-# MOCK — Nombre del tomador de decisión (fuente: búsqueda web / LLM)
-# En producción: usar Google Custom Search API o Tavily con query:
-#   f"Gerente Planta OR Director Operaciones site:{domain}"
+# Google Custom Search — tomador de decisión vía LinkedIn
 # ---------------------------------------------------------------------------
 
-_CONTACT_NAME_DB: Dict[str, Optional[str]] = {
-    "metalurgicamarques.mx": "Carlos Mendoza",
-    "maquinadosbajio.com":   "Alejandro Ruiz Torres",
-    "aceroscen.mx":          None,  # no se encontró nombre público
-}
-
-_CONTACT_ROLE_DB: Dict[str, Optional[str]] = {
-    "metalurgicamarques.mx": "Gerente de Planta e Ingeniería",
-    "maquinadosbajio.com":   "Director de Operaciones",
-    "aceroscen.mx":          None,
-}
-
-
-def _find_contact_name(domain: str) -> tuple[Optional[str], Optional[str]]:
+def _find_contact_name(domain: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Mock: devuelve (nombre_completo, rol) del tomador de decisión.
-    En producción: búsqueda web con query f"Gerente Planta site:{domain}"
-    o llamada a un LLM con tool de búsqueda.
+    Busca el tomador de decisión de una empresa en LinkedIn via Google Custom Search.
+
+    Args:
+        domain: Dominio de la empresa (ej. "metalurgicamarques.mx")
+
+    Returns:
+        (full_name, role, linkedin_url) — cualquiera puede ser None si no hay resultado
+        o si GOOGLE_MAPS_API_KEY / GOOGLE_CSE_ID no están definidas.
     """
-    return _CONTACT_NAME_DB.get(domain), _CONTACT_ROLE_DB.get(domain)
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    cse_id  = os.getenv("GOOGLE_CSE_ID")
+
+    if not api_key or not cse_id:
+        return None, None, None
+
+    query = (
+        f'Gerente Planta OR Director Operaciones OR "Director General" '
+        f'site:linkedin.com "{domain}"'
+    )
+
+    try:
+        resp = requests.get(
+            _CSE_URL,
+            params={"key": api_key, "cx": cse_id, "q": query, "num": 1},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        if not items:
+            return None, None, None
+
+        item  = items[0]
+        title = item.get("title", "")
+        link  = item.get("link")
+
+        # LinkedIn title: "Nombre Apellido - Rol en Empresa | LinkedIn"
+        name = title.split(" - ")[0].strip() or None
+
+        role = None
+        if " - " in title:
+            after_dash = title.split(" - ", 1)[1]
+            role_raw   = after_dash.split(" en ")[0].split(" | ")[0].strip()
+            role = role_raw or None
+
+        return name, role, link
+
+    except Exception as exc:
+        print(f"  ⚠ CSE: error buscando contacto para {domain}: {exc}")
+        return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +119,6 @@ def _enrich_mock(domain: str) -> Dict[str, Any]:
 def lead_finder_node(state: AgentState) -> Dict[str, Any]:
     print("--- EJECUTANDO: LEAD FINDER NODE (Maps + Pre-Hunter + Hunter.io) ---")
 
-    import os
     criteria    = state["target_criteria"]
     use_mock    = not bool(os.getenv("HUNTER_API_KEY"))
 
@@ -103,9 +135,9 @@ def lead_finder_node(state: AgentState) -> Dict[str, Any]:
         public_email = find_public_contact(domain, snippet)
         hunter_result: Dict[str, Any] = {}
 
-        # PASO 3 — Si no hay correo público, buscar el nombre del contacto
-        #          y llamar a Hunter (1 crédito)
-        full_name, role = _find_contact_name(domain)
+        # PASO 3 — Buscar tomador de decisión en LinkedIn (Google Custom Search)
+        #          y llamar a Hunter si no hay correo público (1 crédito)
+        full_name, role, cse_linkedin = _find_contact_name(domain)
 
         if not public_email and full_name:
             first, last = split_name(full_name)
@@ -116,8 +148,9 @@ def lead_finder_node(state: AgentState) -> Dict[str, Any]:
                     hunter_result = enrich_with_hunter(domain, first, last)
 
         # Resolver email final: público > Hunter (si confidence >= 70) > None
+        # Resolver LinkedIn: Hunter > CSE (ambas fuentes son fiables)
         final_email    = public_email
-        final_linkedin = hunter_result.get("linkedin")
+        final_linkedin = hunter_result.get("linkedin") or cse_linkedin
 
         if not final_email:
             if hunter_result.get("confidence", 0) >= 70:
