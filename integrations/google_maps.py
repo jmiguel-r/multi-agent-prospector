@@ -1,5 +1,5 @@
 """
-integrations/google_maps.py — Google Maps Places API
+integrations/google_maps.py — Google Maps Places API (New)
 
 Contrato público:
     search_companies(industry, region, max_results) -> List[Dict]
@@ -11,69 +11,18 @@ Cada Dict devuelto tiene la forma:
         "snippet": str,   # descripción del lugar
     }
 
-Este contrato es idéntico al mock `_search_google_maps()` en agents/lead_finder.py.
-Reemplazar el import allí para activar la integración real.
-
-Flujo de llamadas a la API:
-    1. textsearch  → obtiene place_id de cada resultado
-    2. place_details → obtiene website, name, editorial_summary por place_id
-
 Documentación:
     https://developers.google.com/maps/documentation/places/web-service/text-search
-    https://developers.google.com/maps/documentation/places/web-service/details
-
-TODO para Claude Code:
-    [ ] Implementar _textsearch(query) -> List[str]  (devuelve place_ids)
-    [ ] Implementar _place_details(place_id) -> Dict  (devuelve name, website, snippet)
-    [ ] Implementar search_companies() llamando a ambas en secuencia
-    [ ] Manejar el caso donde place_details no devuelve "website" (campo opcional en Maps)
-    [ ] Respetar rate limits: 1 QPS en el tier básico de Places API
 """
 import os
-import requests
+import re
 from typing import List, Dict, Any
 
-MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-_TEXTSEARCH_URL  = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-_DETAILS_URL     = "https://maps.googleapis.com/maps/api/place/details/json"
-_DETAILS_FIELDS  = "name,website,editorial_summary"
+import requests
 
-
-def _textsearch(query: str) -> List[str]:
-    """
-    Busca lugares en Google Maps y devuelve sus place_ids.
-
-    Args:
-        query: Ej. "manufactura metalmecánica Querétaro"
-
-    Returns:
-        Lista de place_ids (strings)
-
-    TODO: implementar
-    """
-    raise NotImplementedError(
-        "Implementar llamada a Places API textsearch. "
-        "Ver: https://developers.google.com/maps/documentation/places/web-service/text-search"
-    )
-
-
-def _place_details(place_id: str) -> Dict[str, Any]:
-    """
-    Obtiene detalles de un lugar a partir de su place_id.
-    Campos solicitados: name, website, editorial_summary.
-
-    Args:
-        place_id: ID devuelto por textsearch
-
-    Returns:
-        Dict con keys: name (str), website (str | None), snippet (str)
-
-    TODO: implementar
-    """
-    raise NotImplementedError(
-        "Implementar llamada a Places API place_details. "
-        "Ver: https://developers.google.com/maps/documentation/places/web-service/details"
-    )
+_TEXTSEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+_FIELD_MASK = "places.displayName,places.websiteUri,places.editorialSummary"
+_HTTPS_PREFIX = re.compile(r"^https?://", re.IGNORECASE)
 
 
 def search_companies(
@@ -82,7 +31,7 @@ def search_companies(
     max_results: int = 10,
 ) -> List[Dict[str, Any]]:
     """
-    Busca empresas físicas de una industria en una región usando Google Maps.
+    Busca empresas físicas de una industria en una región usando Google Maps Places API (New).
 
     Contrato de salida (igual que el mock en agents/lead_finder.py):
         [
@@ -97,14 +46,45 @@ def search_companies(
     Args:
         industry:    Sector a buscar (ej. "manufactura metalmecánica")
         region:      Región geográfica (ej. "Querétaro")
-        max_results: Máximo de empresas a devolver
+        max_results: Máximo de empresas a devolver (máx. 20 por límite de la API)
 
     Returns:
         Lista de dicts con title, website, snippet.
-        Empresas sin website son descartadas (no se pueden enriquecer con Apollo).
+        Empresas sin website son descartadas (no se pueden enriquecer con Hunter).
 
-    TODO: implementar llamando a _textsearch() y _place_details()
+    Raises:
+        EnvironmentError: Si GOOGLE_MAPS_API_KEY no está definida.
+        requests.HTTPError: Si la API responde con un error HTTP.
     """
-    raise NotImplementedError(
-        "Implementar search_companies() orquestando _textsearch() → _place_details()."
-    )
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        raise EnvironmentError("GOOGLE_MAPS_API_KEY no está definida en el entorno.")
+
+    payload = {
+        "textQuery": f"{industry} en {region}",
+        "maxResultCount": min(max_results, 20),
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": _FIELD_MASK,
+    }
+
+    response = requests.post(_TEXTSEARCH_URL, json=payload, headers=headers, timeout=10)
+    response.raise_for_status()
+
+    places = response.json().get("places", [])
+
+    results: List[Dict[str, Any]] = []
+    for place in places:
+        website_raw = place.get("websiteUri")
+        if not website_raw:
+            continue
+
+        domain = _HTTPS_PREFIX.sub("", website_raw).rstrip("/")
+        title = place.get("displayName", {}).get("text", "")
+        snippet = place.get("editorialSummary", {}).get("text", "")
+
+        results.append({"title": title, "website": domain, "snippet": snippet})
+
+    return results

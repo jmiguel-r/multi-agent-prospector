@@ -19,39 +19,13 @@ cuando se activen las API keys reales.
 """
 from typing import Dict, Any, List, Optional
 from state import AgentState, LeadInfo
+from integrations.google_maps import search_companies
 from integrations.hunter import (
     find_public_contact,
     enrich_with_hunter,
     split_name,
 )
 
-
-# ---------------------------------------------------------------------------
-# MOCK — Google Maps Places API
-# En producción: reemplazar con integrations/google_maps.search_companies()
-# ---------------------------------------------------------------------------
-
-def _search_google_maps(industry: str, region: str) -> List[Dict[str, Any]]:
-    """Mock de textsearch + place_details de Google Maps."""
-    return [
-        {
-            "title":   "Metalúrgica El Marqués S.A.",
-            "website": "metalurgicamarques.mx",
-            "snippet": "Taller de soldadura MIG/TIG y estampado progresivo. "
-                       "25 años en El Marqués, Querétaro.",
-        },
-        {
-            "title":   "Maquinados Industriales del Bajío",
-            "website": "maquinadosbajio.com",
-            "snippet": "Fresado CNC y torno manual. "
-                       "Fabricación de refacciones para sector automotriz.",
-        },
-        {
-            "title":   "Aceros y Ensambles del Centro S.C.",
-            "website": "aceroscen.mx",
-            "snippet": "Ensamble estructural y pintura electrostática.",
-        },
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +91,7 @@ def lead_finder_node(state: AgentState) -> Dict[str, Any]:
     use_mock    = not bool(os.getenv("HUNTER_API_KEY"))
 
     # PASO 1 — Descubrir empresas en la región
-    raw_results = _search_google_maps(criteria.industry, criteria.region)
+    raw_results = search_companies(criteria.industry, criteria.region)
 
     enriched_leads: List[LeadInfo] = []
 

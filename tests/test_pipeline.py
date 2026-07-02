@@ -16,6 +16,26 @@ from planner import planner_node, MAX_SEARCH_ATTEMPTS
 from lead_finder import lead_finder_node
 from main import build_graph
 
+_MOCK_MAPS_RESULTS = [
+    {
+        "title":   "Metalúrgica El Marqués S.A.",
+        "website": "metalurgicamarques.mx",
+        "snippet": "Taller de soldadura MIG/TIG y estampado progresivo. "
+                   "25 años en El Marqués, Querétaro.",
+    },
+    {
+        "title":   "Maquinados Industriales del Bajío",
+        "website": "maquinadosbajio.com",
+        "snippet": "Fresado CNC y torno manual. "
+                   "Fabricación de refacciones para sector automotriz.",
+    },
+    {
+        "title":   "Aceros y Ensambles del Centro S.C.",
+        "website": "aceroscen.mx",
+        "snippet": "Ensamble estructural y pintura electrostática.",
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Fixture — Lead de muestra para tests de Planner
@@ -153,6 +173,10 @@ class TestPlannerRouting:
 
 class TestLeadFinderQualityFilter:
 
+    @pytest.fixture(autouse=True)
+    def patch_maps(self, monkeypatch):
+        monkeypatch.setattr("lead_finder.search_companies", lambda *a, **kw: _MOCK_MAPS_RESULTS)
+
     def _make_state(self):
         return _base_initial_state("both")
 
@@ -178,6 +202,10 @@ class TestLeadFinderQualityFilter:
 # ---------------------------------------------------------------------------
 
 class TestPipelineEndToEnd:
+
+    @pytest.fixture(autouse=True)
+    def patch_maps(self, monkeypatch):
+        monkeypatch.setattr("lead_finder.search_companies", lambda *a, **kw: _MOCK_MAPS_RESULTS)
 
     @pytest.mark.asyncio
     async def test_full_pipeline_both_output_type(self):
