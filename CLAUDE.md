@@ -22,7 +22,7 @@ El Planner es el ÚNICO punto de decisión. Ningún agente enruta directamente a
 | `state.py` | ✅ Completo | No modificar — es el contrato de datos de todo el sistema |
 | `main.py` | ✅ Completo | Grafo ensamblado y probado end-to-end |
 | `planner.py` | ✅ Completo | Routing determinista, no requiere LLM |
-| `lead_finder.py` | ✅ Completo | Usa `search_companies()` real; mock de nombre/rol de contacto pendiente |
+| `lead_finder.py` | ✅ Completo | Pipeline completo: Maps → CSE (LinkedIn) → Pre-Hunter → Hunter; solo `_enrich_mock()` como fallback sin API key |
 | `copywriter.py` | ✅ Completo | Async, usa Gemini 2.5 Pro, fallback sin API key |
 | `app.py` | ✅ Completo | Streamlit UI: tabla de leads, drafts editables, export a HubSpot |
 | `integrations/google_maps.py` | ✅ Completo | Places API (New) — single POST, descarta resultados sin website |
@@ -58,7 +58,8 @@ El Planner es el ÚNICO punto de decisión. Ningún agente enruta directamente a
 
 ```bash
 GEMINI_API_KEY=...        # Copywriter — Gemini 2.5 Pro
-GOOGLE_MAPS_API_KEY=...   # integrations/google_maps.py
+GOOGLE_MAPS_API_KEY=...   # integrations/google_maps.py + _find_contact_name() en lead_finder.py
+GOOGLE_CSE_ID=...         # lead_finder.py — Custom Search Engine ID (busca en LinkedIn)
 HUNTER_API_KEY=...        # integrations/hunter.py  (25 req/mes gratis)
 HUBSPOT_ACCESS_TOKEN=...  # integrations/hubspot.py
 ```
@@ -68,20 +69,31 @@ Razones: tier gratuito (25 Email Finder/mes vs Apollo $49+/mes),
 endpoint más simple (domain + first_name + last_name → email),
 y estrategia "Zero Cost" que protege créditos con scraping previo.
 
-Sin estas claves el sistema corre en modo mock (ver `copywriter.py` línea ~60
-y el mock `_enrich_mock()` en `lead_finder.py`).
+Sin estas claves el sistema degrada graciosamente:
+- Sin `GOOGLE_CSE_ID`: `_find_contact_name()` devuelve `(None, None, None)` — el lead puede seguir calificando si Pre-Hunter encuentra un correo público.
+- Sin `HUNTER_API_KEY`: se activa `_enrich_mock()` (fallback hard-coded para tests).
+- Sin `GEMINI_API_KEY`: el Copywriter usa un template de fallback.
 
-## Mocks pendientes en lead_finder.py
+## Único mock restante
 
-Google Maps y Hunter están conectados a sus APIs reales. Quedan dos mocks internos:
+| Función | Propósito | Cuándo se activa |
+|---------|-----------|-----------------|
+| `_enrich_mock(domain)` en `lead_finder.py` | Simula respuesta de Hunter.io | Solo cuando `HUNTER_API_KEY` no está definida |
 
-| Mock | Función | Reemplazar con |
-|------|---------|----------------|
-| `_find_contact_name(domain)` | Devuelve nombre/rol del tomador de decisión | Google Custom Search API o Tavily: `f"Gerente Planta OR Director Operaciones site:{domain}"` |
-| `_enrich_mock(domain)` | Fallback Hunter sin API key | Se activa automáticamente cuando `HUNTER_API_KEY` no está definida — no requiere cambio |
+## Estado del pipeline — todo en producción
 
-## Siguiente tarea prioritaria
-Implementar búsqueda real del nombre del contacto en `lead_finder.py`:
-- Reemplazar `_find_contact_name(domain)` con llamada a Tavily o Google Custom Search
-- Query sugerida: `f"Gerente de Planta OR Director de Operaciones site:{domain}"`
-- Extraer nombre y rol del primer resultado con un LLM (Gemini Flash para bajo costo)
+Todas las integraciones reales están implementadas y conectadas:
+
+```
+Google Maps Places API (New)
+    ↓  empresas + dominio + snippet
+Pre-Hunter scraping (find_public_contact)
+    ↓  correo público si existe (0 créditos)
+Google Custom Search → LinkedIn
+    ↓  nombre, rol y perfil LinkedIn del tomador de decisión
+Hunter.io Email Finder
+    ↓  correo corporativo (1 crédito, solo si no hay correo público)
+Filtro de calidad (email OR linkedin requerido)
+    ↓
+HubSpot CRM (upsert contacto + nota con outreach draft)
+```
