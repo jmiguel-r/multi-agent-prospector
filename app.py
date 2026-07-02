@@ -127,6 +127,12 @@ if run_btn:
             st.session_state["result"] = result
             # Inicializar drafts editables con los generados
             st.session_state["edited_drafts"] = dict(result.get("outreach_drafts", {}))
+            # Auto-push a HubSpot al finalizar pipeline
+            if os.getenv("HUBSPOT_ACCESS_TOKEN") and result.get("leads"):
+                pushed = push_leads_to_hubspot(
+                    result["leads"], result.get("outreach_drafts", {})
+                )
+                st.session_state["hubspot_pushed"] = pushed
         except Exception as e:
             st.error(f"Error al ejecutar el pipeline: {e}")
             st.stop()
@@ -143,6 +149,10 @@ if "result" in st.session_state:
     col1.metric("Leads calificados",   len(result["leads"]))
     col2.metric("Outreach generados",  len(result.get("outreach_drafts", {})))
     col3.metric("Decisiones Planner",  len(result["plan_logs"]))
+
+    if st.session_state.get("hubspot_pushed"):
+            pushed = st.session_state["hubspot_pushed"]
+            st.success(f"✅ HubSpot: {len(pushed)} contacto(s) sincronizados — {', '.join(pushed.keys())}")
 
     if result.get("error_message"):
         st.warning(f"⚠️ {result['error_message']}")
