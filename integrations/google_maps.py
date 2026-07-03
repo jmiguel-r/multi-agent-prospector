@@ -25,11 +25,11 @@ import requests
 # ---------------------------------------------------------------------------
 
 _INDUSTRY_MAPS_TERMS: Dict[str, str] = {
-    # Manufactura
+  # Manufactura
     "manufactura metalmecánica": "taller metalmecánico",
-    "manufactura automotriz": "autopartes",
-    "proveedor automotriz": "autopartes",
-    "planta de manufactura automotriz": "autopartes",
+    "manufactura automotriz": "maquiladora",
+    "proveedor automotriz": "maquiladora",
+    "planta de manufactura automotriz": "parque industrial",
     "manufactura": "planta industrial",
     # Agroindustria
     "agroindustria": "empresa procesadora de alimentos",
