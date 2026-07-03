@@ -20,6 +20,36 @@ from typing import List, Dict, Any
 
 import requests
 
+# ---------------------------------------------------------------------------
+# Mapeo industria → términos reconocidos por Google Maps Places API
+# ---------------------------------------------------------------------------
+
+_INDUSTRY_MAPS_TERMS: Dict[str, str] = {
+    # Manufactura
+    "manufactura metalmecánica": "taller metalmecánico",
+    "manufactura automotriz": "autopartes",
+    "proveedor automotriz": "autopartes",
+    "planta de manufactura automotriz": "autopartes",
+    "manufactura": "planta industrial",
+    # Agroindustria
+    "agroindustria": "empresa procesadora de alimentos",
+    "empresa procesadora de alimentos": "procesadora de alimentos",
+    "alimentos": "empacadora de alimentos",
+    # Logística
+    "logística": "empresa de logística",
+    "logística y distribución": "almacén y distribución",
+    "empresa de logística y almacenamiento": "almacén industrial",
+    # Otros
+    "farmacéutica": "laboratorio farmacéutico",
+    "química": "empresa química",
+    "construcción": "constructora",
+}
+
+def _normalize_industry(industry: str) -> str:
+    """Traduce el término de industria del usuario a uno que Maps reconoce."""
+    key = industry.lower().strip()
+    return _INDUSTRY_MAPS_TERMS.get(key, industry)
+
 _TEXTSEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 _FIELD_MASK = "places.displayName,places.websiteUri,places.editorialSummary"
 _HTTPS_PREFIX = re.compile(r"^https?://", re.IGNORECASE)
@@ -61,7 +91,7 @@ def search_companies(
         raise EnvironmentError("GOOGLE_MAPS_API_KEY no está definida en el entorno.")
 
     payload = {
-        "textQuery": f"{industry} en {region}",
+        "textQuery": f"{_normalize_industry(industry)} en {region}",
         "maxResultCount": min(max_results, 20),
     }
     headers = {
